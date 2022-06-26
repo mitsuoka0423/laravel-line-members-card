@@ -84,3 +84,23 @@ Route::post('/webhook', function (Request $request) use ($bot, $barcodeGenerator
 
     return 'ok!';
 });
+
+Route::get('/members/{memberId}', function ($memberId) {
+    // モックモードの場合、テストデータを返却する
+    if ($memberId === '123456789') {
+        return [
+            'UserId' => '123456789',
+            'Name' => 'テストデータ',
+            'MemberId' => '9381274411',
+        ];
+    }
+
+    // Airtableからデータを取得する
+    $member = Airtable::where('UserId', $memberId)->get();
+
+    if ($member->isEmpty()) {
+        return abort(404);
+    }
+
+    return $member->first()['fields'];
+});
