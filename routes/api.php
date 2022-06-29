@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 use LINE\LINEBot;
@@ -44,40 +45,38 @@ Route::post('/webhook', function (Request $request) use ($bot, $barcodeGenerator
 
     collect($events)->each(function ($event) use ($bot, $barcodeGenerator) {
         if ($event instanceof TextMessage) {
-            if ($event instanceof TextMessage) {
-                if ($event->getText() === '会員カード') {
-                    // 会員登録済みか確認するため、Airtableからデータを取得する
-                    $member = Airtable::where('UserId', $event->getUserId())->get();
+            if ($event->getText() === '会員カード') {
+                // 会員登録済みか確認するため、Airtableからデータを取得する
+                $member = Airtable::where('UserId', $event->getUserId())->get();
 
-                    if ($member->isEmpty()) {
-                        // Airtableに会員データがなければ、生成して登録する
-                        $memberId = strval(rand(1000000000, 9999999999));
-                        $member = Airtable::firstOrCreate([
-                            'UserId' => $event->getUserId(),
-                            'Name' => $bot->getProfile($event->getUserId())->getJSONDecodedBody()['displayName'],
-                            'MemberId' => $memberId,
-                        ]);
-                        Log::debug('Member is created.');
-                    } else {
-                        // Airtableにデータがあれば、取得したデータを利用する
-                        $memberId = $member->first()['fields']['MemberId'];
-                    }
-
-                    $barcodeFileName = "{$memberId}.png";
-                    $barcodeFilePath = "public/{$barcodeFileName}";
-                    if (!Storage::exists($barcodeFilePath)) {
-                        $barcodeImage = $barcodeGenerator->getBarcode($memberId, $barcodeGenerator::TYPE_CODE_128);
-                        Storage::put($barcodeFilePath, $barcodeImage);
-                    } else {
-                        $barcodeImage = Storage::get($barcodeFilePath);
-                    }
-
-                    $imageUrl = Config::get('app.url') . '/storage/' . $barcodeFileName;
-                    $imageMessageBuilder = new ImageMessageBuilder($imageUrl, $imageUrl);
-                    return $bot->replyMessage($event->getReplyToken(), $imageMessageBuilder);
+                if ($member->isEmpty()) {
+                    // Airtableに会員データがなければ、生成して登録する
+                    $memberId = strval(rand(1000000000, 9999999999));
+                    $member = Airtable::firstOrCreate([
+                        'UserId' => $event->getUserId(),
+                        'Name' => $bot->getProfile($event->getUserId())->getJSONDecodedBody()['displayName'],
+                        'MemberId' => $memberId,
+                    ]);
+                    Log::debug('Member is created.');
                 } else {
-                    return $bot->replyText($event->getReplyToken(), $event->getText());
+                    // Airtableにデータがあれば、取得したデータを利用する
+                    $memberId = $member->first()['fields']['MemberId'];
                 }
+
+                $barcodeFileName = "{$memberId}.png";
+                $barcodeFilePath = "public/{$barcodeFileName}";
+                if (!Storage::exists($barcodeFilePath)) {
+                    $barcodeImage = $barcodeGenerator->getBarcode($memberId, $barcodeGenerator::TYPE_CODE_128);
+                    Storage::put($barcodeFilePath, $barcodeImage);
+                } else {
+                    $barcodeImage = Storage::get($barcodeFilePath);
+                }
+
+                $imageUrl = Config::get('app.url') . '/storage/' . $barcodeFileName;
+                $imageMessageBuilder = new ImageMessageBuilder($imageUrl, $imageUrl);
+                return $bot->replyMessage($event->getReplyToken(), $imageMessageBuilder);
+            } else {
+                return $bot->replyText($event->getReplyToken(), $event->getText());
             }
         }
     });
@@ -85,21 +84,36 @@ Route::post('/webhook', function (Request $request) use ($bot, $barcodeGenerator
     return 'ok!';
 });
 
-Route::get('/members/{memberId}', function ($memberId) {
-    // モックモードの場合、テストデータを返却する
-    if ($memberId === '123456789') {
-        return [
-            'UserId' => '123456789',
-            'Name' => 'テストデータ',
-            'MemberId' => '9381274411',
-        ];
-    }
+Route::get('/members/{idToken}', function ($idToken) use ($bot) {
+    Log::debug(['idToken' => $idToken]);
 
-    // Airtableからデータを取得する
-    $member = Airtable::where('UserId', $memberId)->get();
+    // IDトークンを検証する
+    // https://developers.line.biz/ja/reference/line-login/#verify-id-token
+    $response = Http::asForm()->post('https://api.line.me/oauth2/v2.1/verify', [
+        'id_token' => $idToken,
+        'client_id' => $_ENV['LINE_LOGIN_CHANNEL_ID'],
+    ]);
+    Log::debug(['response' => $response->json()]);
+
+    // LINEのユーザーIDと表示名を取得する
+    $userId = $response->json()['sub'];
+    $name = $response->json()['name'];
+
+    // 会員登録済みか確認するため、Airtableからデータを取得する
+    $member = Airtable::where('UserId', $userId)->get();
 
     if ($member->isEmpty()) {
-        return abort(404);
+        // Airtableに会員データがなければ、生成して登録する
+        $memberId = strval(rand(1000000000, 9999999999));
+        $member = Airtable::firstOrCreate([
+            'UserId' => $userId,
+            'Name' => $name,
+            'MemberId' => $memberId,
+        ]);
+        Log::debug('Member is created.');
+    } else {
+        // Airtableにデータがあれば、取得したデータを利用する
+        $memberId = $member->first()['fields']['MemberId'];
     }
 
     return $member->first()['fields'];
